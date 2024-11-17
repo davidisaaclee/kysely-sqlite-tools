@@ -5,6 +5,8 @@ import type { WaSqliteWorkerDialectConfig } from './type'
 
 export { isIdbSupported, isOpfsSupported, isModuleWorkerSupport } from '@subframe7536/sqlite-wasm'
 
+console.log("Loaded updated version 2");
+
 export class WaSqliteWorkerDialect implements Dialect {
   private config: WaSqliteWorkerDialectConfig
 

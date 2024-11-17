@@ -6,6 +6,15 @@ import { isModuleWorkerSupport, isOpfsSupported } from '@subframe7536/sqlite-was
 import type { EventWithError, MainMsg, WaSqliteWorkerDialectConfig, WorkerMsg } from './type'
 import { defaultWasmURL, defaultWorker, parseWorkerOrURL } from './utils'
 
+let requestCounter = 0;
+
+function postToWorker(worker: Worker, msg: any) {
+  const id = requestCounter++;
+  worker.postMessage([id, ...msg])
+  console.log('postToWorker',[id, ...msg]);
+  return id
+}
+
 export class WaSqliteWorkerDriver implements Driver {
   private config: WaSqliteWorkerDialectConfig
   private worker?: Worker
@@ -30,10 +39,13 @@ export class WaSqliteWorkerDriver implements Driver {
 
     this.worker = parseWorkerOrURL(this.config.worker || defaultWorker, useOPFS || isModuleWorkerSupport())
 
-    this.worker.onmessage = ({ data: [type, ...msg] }: MessageEvent<WorkerMsg>) => {
-      this.mitt?.emit(type, ...msg)
+    this.worker.onmessage = ({ data: [requestIndex, type, ...msg] }: MessageEvent<any>) => {
+      console.log('Received response from worker:', requestIndex, type, msg)
+      if (type <= 4) {
+        this.mitt?.emit(type, ...msg, requestIndex)
+      }
     }
-    this.worker.postMessage([
+    postToWorker(this.worker, [
       0,
       this.config.fileName,
       // if use OPFS, wasm should use sync version
@@ -75,7 +87,7 @@ export class WaSqliteWorkerDriver implements Driver {
     if (!this.worker) {
       return
     }
-    this.worker.postMessage([2] satisfies MainMsg)
+    postToWorker(this.worker, [2] satisfies MainMsg)
     return new Promise<void>((resolve, reject) => {
       this.mitt?.once(2, (_, err) => {
         if (err) {
@@ -128,7 +140,7 @@ class WaSqliteWorkerConnection implements DatabaseConnection {
     if (!SelectQueryNode.is(query)) {
       throw new Error('WaSqlite dialect only supported SELECT queries')
     }
-    this.worker.postMessage([3, sql, parameters] satisfies MainMsg)
+    postToWorker(this.worker, [3, sql, parameters] satisfies MainMsg)
     let resolver: ((value: IteratorResult<{ rows: QueryResult<R>[] }>) => void) | null = null
     let rejecter: ((reason: any) => void) | null = null
 
@@ -170,13 +182,17 @@ class WaSqliteWorkerConnection implements DatabaseConnection {
   async executeQuery<R>(compiledQuery: CompiledQuery<unknown>): Promise<QueryResult<R>> {
     const { parameters, sql, query } = compiledQuery
     const isSelect = SelectQueryNode.is(query)
-    this.worker.postMessage([1, isSelect, sql, parameters] satisfies MainMsg)
+    const id = postToWorker(this.worker, [1, isSelect, sql, parameters] satisfies MainMsg)
     return new Promise((resolve, reject) => {
       if (!this.mitt) {
         reject(new Error('kysely instance has been destroyed'))
       }
 
-      this.mitt!.once(1, (data, err) => (!err && data) ? resolve(data) : reject(err))
+      this.mitt!.once(1, (data, err, reqId) => {
+      console.log('Worker req/res:', id, reqId, 
+                  { sql, data });
+        (!err && data) ? resolve(data) : reject(err);
+      })
     })
   }
 }
